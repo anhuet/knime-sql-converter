@@ -30,6 +30,9 @@ import { convertColumnMergerNodeToSQL } from "./functions/convertColumnMergerNod
 import { getColumnNodes } from "./functions/getColumnNodes"; // [cite: uploaded:src/functions/getColumnNodes.js]
 import { convertStringToNumberNodeToSQL } from "./functions/convertStringToNumberNodeToSQL"; // [cite: knime_string_to_number_sql]
 import { convertExpressionNodeToSQL } from "./functions/convertExpressionNodeToSQL";
+import { convertRuleEngineNodeToSQL } from "./functions/convertRuleEngineNodeToSQL";
+import { convertColumnRenamerNodeToSQL } from "./functions/convertColumnRenamerNodeToSQL";
+import { convertConcatenateNodeToSQL } from "./functions/convertConcatenateNodeToSQL";
 const { Dragger } = Upload;
 const { Title } = Typography;
 
@@ -89,8 +92,6 @@ export function convertSelectedNodeToSQL(
         allProcessedNodes // Pass the context
       );
 
-    // --- Calls to other functions remain unchanged for now ---
-    // --- Consider updating them later to use allProcessedNodes if needed ---
     case "org.knime.base.node.io.filehandling.csv.reader.CSVTableReaderNodeFactory":
       return convertCSVReaderNodeToSQL(nodeConfig);
 
@@ -145,6 +146,38 @@ export function convertSelectedNodeToSQL(
         nodeConfigJson,
         selectedNode.id,
         singlePreviousName, // Ensure this is correctly determined
+        allProcessedNodes
+      );
+    case "org.knime.base.node.rules.engine.RuleEngineNodeFactory":
+      // Get input columns if possible for accurate SELECT list
+      const predecessorNodeRE = allProcessedNodes.find(
+        (p) => p.nextNodes && p.nextNodes.includes(selectedNode.id)
+      );
+      const inputColsRE = predecessorNodeRE ? predecessorNodeRE.nodes : null; // Pass null if unknown
+      return convertRuleEngineNodeToSQL(
+        selectedNode.config,
+        selectedNode.id,
+        singlePreviousName,
+        allProcessedNodes // Pass the context (needed for findPredecessorNodes)
+      );
+    case "org.knime.base.node.preproc.column.renamer.ColumnRenamerNodeFactory":
+      // selectedNode is the full node object from your parsed workflow
+      // selectedNode.config should be the JSON parsed from settings.xml
+      // singlePreviousName is the SQL alias/name of the table from the predecessor node
+      // allProcessedNodes is the array of all nodes processed so far with their output schemas
+      return convertColumnRenamerNodeToSQL(
+        selectedNode.config,
+        selectedNode.id, // This object must include the 'id' property for the current node
+        singlePreviousName,
+        allProcessedNodes
+      );
+
+    case "org.knime.base.node.preproc.append.row.AppendedRowsNodeFactory": // Concatenate Node
+      // Ensure 'allProcessedNodes' (or your context variable) is available here
+      // 'selectedNode.config' should include the node's 'id' added during parsing
+      return convertConcatenateNodeToSQL(
+        selectedNode.config,
+        selectedNode.id,
         allProcessedNodes
       );
     default:
