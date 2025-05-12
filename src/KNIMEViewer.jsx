@@ -16,7 +16,8 @@ import React, { useEffect, useState } from "react";
 import * as xmlJs from "xml-js";
 // Removed lodash import as it wasn't used directly in the provided snippet
 // import _ from "lodash";
-
+// ... other imports
+import { convertStringManipulationNodeToSQL } from "./functions/convertStringManipulationNodeToSQL";
 // Import all necessary conversion functions
 import { parseWorkflowKnime } from "./functions/parseWorkflowKnime"; // [cite: uploaded:src/functions/parseWorkflowKnime.js]
 import { convertCSVReaderNodeToSQL } from "./functions/convertCSVReaderNodeToSQL"; // [cite: uploaded:src/functions/convertCSVReaderNodeToSQL.js]
@@ -27,9 +28,8 @@ import { convertJoinerNodeToSQL } from "./functions/convertJoinerJSONToSQL"; // 
 import { convertExcelReaderNodeToSQL } from "./functions/convertExcelReaderNodeToSQL"; // [cite: uploaded:src/functions/convertExcelReaderNodeToSQL.js]
 import { convertColumnMergerNodeToSQL } from "./functions/convertColumnMergerNodeToSQL"; // [cite: uploaded:src/functions/convertColumnMergerNodeToSQL.js]
 import { getColumnNodes } from "./functions/getColumnNodes"; // [cite: uploaded:src/functions/getColumnNodes.js]
-// Import the updated String to Number converter
 import { convertStringToNumberNodeToSQL } from "./functions/convertStringToNumberNodeToSQL"; // [cite: knime_string_to_number_sql]
-
+import { convertExpressionNodeToSQL } from "./functions/convertExpressionNodeToSQL";
 const { Dragger } = Upload;
 const { Title } = Typography;
 
@@ -67,7 +67,8 @@ const findAllPreviousNodes = (currentNodeId, allNodes) => {
 export function convertSelectedNodeToSQL(
   nodeConfig, // Should include 'id' property
   predecessorNames = [], // Still useful for deriving previousNodeName easily
-  allProcessedNodes = [] // Context of nodes processed *before* the current one
+  allProcessedNodes = [],
+  selectedNode // Context of nodes processed *before* the current one
 ) {
   // Determine the primary input table name (often the first predecessor)
   const singlePreviousName =
@@ -131,6 +132,21 @@ export function convertSelectedNodeToSQL(
         inputColsForMerger // Pass the actual input column list here
       );
 
+    case "org.knime.base.node.preproc.stringmanipulation.StringManipulationNodeFactory":
+      return convertStringManipulationNodeToSQL(
+        nodeConfig, // This is selectedNode.config
+        selectedNode.id, // Pass the actual node ID
+        singlePreviousName,
+        allProcessedNodes // Pass the context
+      );
+    case "org.knime.base.expressions.node.row.mapper.ExpressionRowMapperNodeFactory":
+      const nodeConfigJson = selectedNode.config;
+      return convertExpressionNodeToSQL(
+        nodeConfigJson,
+        selectedNode.id,
+        singlePreviousName, // Ensure this is correctly determined
+        allProcessedNodes
+      );
     default:
       console.warn(`Unsupported node factory for SQL conversion: ${factory}`);
       const nodeTypeName = factory.split(".").pop() || "Unknown Type";
@@ -612,7 +628,8 @@ function KNIMEViewer() {
                 return convertSelectedNodeToSQL(
                   selectedNode.config, // Pass the whole selectedNode object (contains config, id, etc.)
                   predecessorNames,
-                  contextForSQL // Pass the filtered list of nodes processed *before* this one
+                  contextForSQL,
+                  selectedNode
                 );
               } catch (error) {
                 console.error("Error during SQL conversion:", error);
