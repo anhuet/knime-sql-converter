@@ -10,6 +10,7 @@ import {
   Upload,
   Modal,
   Tag,
+  Input,
 } from "antd";
 import JSZip from "jszip";
 import React, { useEffect, useState } from "react";
@@ -36,8 +37,6 @@ import { convertConcatenateNodeToSQL } from "./functions/convertConcatenateNodeT
 const { Dragger } = Upload;
 const { Title } = Typography;
 
-// Utility function to get a value from an entry array or object (compact format).
-// Used for parsing node details from settings.xml JSON.
 const getEntryValue = (entryProp, key) => {
   if (!entryProp) return null;
   const entries = Array.isArray(entryProp) ? entryProp : [entryProp];
@@ -49,9 +48,6 @@ const getEntryValue = (entryProp, key) => {
   return entry._attributes.value || null;
 };
 
-// Helper function to find *all* direct predecessors of a given node ID
-// NOTE: This finds predecessors based on the *complete* node list,
-// which is suitable for display but might differ from the context needed for SQL generation.
 const findAllPreviousNodes = (currentNodeId, allNodes) => {
   // Find nodes where currentNodeId is in their nextNodes array
   // Ensure node.nextNodes exists and is an array before checking includes()
@@ -64,9 +60,6 @@ const findAllPreviousNodes = (currentNodeId, allNodes) => {
   );
 };
 
-// Central function to call the appropriate SQL conversion logic based on node type
-// Accepts the node's config, predecessor names, and the context of *all* processed nodes.
-// *** UPDATED SIGNATURE AND LOGIC ***
 export function convertSelectedNodeToSQL(
   nodeConfig, // Should include 'id' property
   predecessorNames = [], // Still useful for deriving previousNodeName easily
@@ -98,8 +91,12 @@ export function convertSelectedNodeToSQL(
     case "org.knime.base.node.preproc.filter.column.DataColumnSpecFilterNodeFactory":
       return convertColumnFilterNodeToSQL(nodeConfig, singlePreviousName);
 
-    case "org.knime.base.node.preproc.filter.row3.RowFilterNodeFactory":
-      return convertRowFilterNodeToSQL(nodeConfig, singlePreviousName);
+    case "org.knime.base.node.preproc.filter.row3.RowFilterNodeFactory": // Row Filter
+      return convertRowFilterNodeToSQL(
+        selectedNode.config,
+        selectedNode.id,
+        allProcessedNodes
+      );
 
     case "org.knime.base.node.preproc.duplicates.DuplicateRowFilterNodeFactory":
       // Placeholder for input columns - this function might also need updating
@@ -192,6 +189,10 @@ function KNIMEViewer() {
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [rawNodeData, setRawNodeData] = useState([]); // Holds data read directly from files
   const [processedNodes, setProcessedNodes] = useState([]); // Holds fully processed data including columns, order, etc.
+
+  const [combinedSql, setCombinedSql] = useState("");
+  const [isCombinedSqlModalVisible, setIsCombinedSqlModalVisible] =
+    useState(false);
 
   const handleUpload = async (file) => {
     const zip = new JSZip();
@@ -419,6 +420,85 @@ function KNIMEViewer() {
     console.log("Processing complete.");
     return finalProcessedData;
   };
+  const handleGenerateCombinedSQL = () => {
+    if (!processedNodes.length) {
+      message.error("Process a workflow file first.");
+      return;
+    }
+
+    const cteParts = [];
+    // Iterate in execution order (already sorted in processedNodes)
+    for (const node of processedNodes) {
+      // Generate SQL for the current node, using the context of *all* processed nodes
+      // to correctly identify predecessors and their CTE names.
+      const nodeSql = convertSelectedNodeToSQL(node, processedNodes); // Use existing function
+
+      if (nodeSql && !nodeSql.startsWith("--")) {
+        // Skip comments or nodes without SQL
+        // Sanitize node name/ID for CTE usage
+        const cteName = `Node_${node.id}`;
+        // Assume nodeSql is already correctly referencing predecessor CTEs (e.g., Node_PreviousID)
+        cteParts.push(
+          `<span class="math-inline">\{cteName\} AS \(\\n</span>{nodeSql}\n)`
+        );
+      } else {
+        // Optional: Add a comment for nodes without direct SQL
+        const cteName = `Node_${node.id}`;
+        const comment = `-- Node <span class="math-inline">\{node\.id\} \(</span>{node.name}) - ${node.type} - No direct SQL equivalent or skipped.`;
+        // Find predecessor CTE name to select from
+        const predecessors = node.predecessorIDs || [];
+        // For simplicity, often the first predecessor is used if no specific logic applies
+        const mainPredecessorId =
+          predecessors.length > 0 ? predecessors[0] : null;
+        const selectFrom = mainPredecessorId
+          ? `Node_${mainPredecessorId}`
+          : "DUAL"; // DUAL or equivalent if no predecessor
+
+        // If it's a simple pass-through or unhandled, select from predecessor
+        // This might need refinement based on node type
+        if (mainPredecessorId) {
+          cteParts.push(
+            `<span class="math-inline">\{cteName\} AS \(\\n  SELECT \* FROM Node\_</span>{mainPredecessorId}\n) -- Placeholder for ${node.name}`
+          );
+        } else {
+          cteParts.push(
+            `-- Skipping Node <span class="math-inline">\{node\.id\} \(</span>{node.name}) as it has no SQL and no clear predecessor.`
+          );
+        }
+
+        // OR just skip adding it to cteParts
+      }
+    }
+
+    if (cteParts.length === 0) {
+      message.warn("No nodes generated valid SQL for combination.");
+      setCombinedSql("");
+      setIsCombinedSqlModalVisible(false);
+      return;
+    }
+
+    // Find the last node that generated a valid CTE
+    let lastCteName = "";
+    for (let i = processedNodes.length - 1; i >= 0; i--) {
+      const potentialCteName = `Node_${processedNodes[i].id}`;
+      if (cteParts.some((part) => part.startsWith(potentialCteName))) {
+        lastCteName = potentialCteName;
+        break;
+      }
+    }
+
+    // Filter out any pure comments added to cteParts before joining
+    const validCteParts = cteParts.filter((part) =>
+      part.trim().startsWith("Node_")
+    );
+
+    const fullSql = `WITH\n${validCteParts.join(
+      ",\n\n"
+    )}\n\nSELECT * FROM ${lastCteName};`;
+
+    setCombinedSql(fullSql);
+    setIsCombinedSqlModalVisible(true);
+  };
 
   // Effect to run processing when rawNodeData changes
   useEffect(() => {
@@ -593,15 +673,24 @@ function KNIMEViewer() {
         </Card>
       )}
       {!!processedNodes.length && ( // Show table only if nodes are processed
-        <Table
-          dataSource={processedNodes}
-          columns={columns}
-          rowKey={(record) => record.id ?? record.nodeName + Math.random()}
-          bordered
-          size="small"
-          scroll={{ x: 1000 }} // Adjust scroll width as needed
-          pagination={{ pageSize: 15, size: "small" }} // Add pagination
-        />
+        <>
+          <Button
+            onClick={handleGenerateCombinedSQL}
+            disabled={!processedNodes.length}
+            style={{ marginBottom: "16px", marginRight: "16px" }} // Added marginRight
+          >
+            Generate Combined Workflow SQL
+          </Button>
+          <Table
+            dataSource={processedNodes}
+            columns={columns}
+            rowKey={(record) => record.id ?? record.nodeName + Math.random()}
+            bordered
+            size="small"
+            scroll={{ x: 1000 }} // Adjust scroll width as needed
+            pagination={{ pageSize: 15, size: "small" }} // Add pagination
+          />
+        </>
       )}
       <Modal
         open={isModalVisible}
@@ -675,6 +764,38 @@ function KNIMEViewer() {
         ) : (
           <p>No node selected or configuration available.</p>
         )}
+      </Modal>
+      <Modal
+        title="Combined Workflow SQL"
+        visible={isCombinedSqlModalVisible}
+        onOk={() => setIsCombinedSqlModalVisible(false)}
+        onCancel={() => setIsCombinedSqlModalVisible(false)}
+        width="80%"
+        footer={[
+          <Button
+            key="copy"
+            onClick={() => {
+              navigator.clipboard.writeText(combinedSql);
+              message.success("SQL copied to clipboard!");
+            }}
+          >
+            Copy SQL
+          </Button>,
+          <Button
+            key="ok"
+            type="primary"
+            onClick={() => setIsCombinedSqlModalVisible(false)}
+          >
+            OK
+          </Button>,
+        ]}
+      >
+        <Input.TextArea
+          value={combinedSql}
+          autoSize={{ minRows: 15, maxRows: 30 }}
+          readOnly
+          style={{ fontFamily: "monospace" }}
+        />
       </Modal>
     </div>
   );
